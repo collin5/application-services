@@ -294,6 +294,40 @@ impl FirefoxAccount {
         Ok(Some(self.handle_oauth_token_response(resp, None)?))
     }
 
+    pub fn begin_pairing_flow(&mut self, scopes: &[&str]) -> Result<String> {
+        let mut url = self.state.config.content_url_path("/pair/supp")?;
+
+        let state = FirefoxAccount::random_base64_url_string(16)?;
+        let code_verifier = FirefoxAccount::random_base64_url_string(43)?;
+        let code_challenge = digest::digest(&digest::SHA256, &code_verifier.as_bytes());
+        let code_challenge = base64::encode_config(&code_challenge, base64::URL_SAFE_NO_PAD);
+
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.state.client_id)
+            .append_pair("redirect_uri", &self.state.redirect_uri)
+            .append_pair("scope", &scopes.join(" "))
+            .append_pair("state", &state)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("code_challenge", &code_challenge)
+            .append_pair("access_type", "offline");
+        let flow = ScopedKeysFlow::with_random_key(&*RNG)?;
+        let jwk_json = flow.generate_keys_jwk()?;
+        let scoped_keys_flow = Some(flow);
+        let keys_jwk = base64::encode_config(&jwk_json, base64::URL_SAFE_NO_PAD);
+        url.query_pairs_mut().append_pair("keys_jwk", &keys_jwk);
+
+        self.flow_store.insert(
+            state.clone(), // Since state is supposed to be unique, we use it to key our flows.
+            OAuthFlow {
+                scoped_keys_flow,
+                code_verifier,
+            },
+        );
+
+        Ok(url.to_string())
+    }
+
+
     pub fn begin_oauth_flow(&mut self, scopes: &[&str], wants_keys: bool) -> Result<String> {
         let state = FirefoxAccount::random_base64_url_string(16)?;
         let code_verifier = FirefoxAccount::random_base64_url_string(43)?;
